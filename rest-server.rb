@@ -1,57 +1,53 @@
-require 'sinatra'
 require 'json'
+require 'open3'
+require 'csv'
+require 'bundler/setup'
+require 'sinatra'
 
 # to use in Docker NAT 
 set :bind, '0.0.0.0'
+opts = { command: 'jumanpp' }
 
-opts = {'command'=>'jumanpp'}
+jumanpp_stdin, jumanpp_stdout = Open3.popen2(opts[:command], "r+") 
 
-rnnlm = IO.popen(opts['command'], "r+") 
-
+MORPH_INFO_KEYS = [ :surface_form,
+                    :pronunciation,
+                    :entry_word,
+                    :part_category,
+                    :part_category_id,
+                    :part_class,
+                    :part_class_id,
+                    :conjugational_type,
+                    :conjugational_type_id,
+                    :conjugational_form,
+                    :conjugational_form_id,
+                    :semantic_infomation ].freeze
 
 # required that jumanpp is installed before execution
-# input: {`sentense': '(sentense)'
+# input: {`sentence': '(sentence)'
 # output: JSON data by separated word and detail information of word.
 post '/jumanpp' do
+  params = JSON.parse(request.body.read)
 
-	params = JSON.parse(request.body.read)
+  sentence = params['sentence'].to_s
+  jumanpp_stdin.puts(sentence)
+  response = []
 
-	rnnlm.puts(params['sentense'])
+  jumanpp_stdout.each do |line|
+    line.chomp!
+    break if line == 'EOS'
+    splited_line = CSV.parse_line(line.force_encoding('utf-8'), col_sep: ' ')
+    if line.start_with?('@')
+      splited_line.shift
+      morph_info = response.pop
+      splited_line.each_with_index do |col, idx|
+        morph_info[MORPH_INFO_KEYS[idx]] << col
+      end
+    else
+      morph_info = Hash[MORPH_INFO_KEYS.zip(splited_line.map {|v| Array(v) })]
+    end
+    response << morph_info
+  end
 
-	response_to_word_number = { 1 => "surface_form", 
-		     2 => "pronunciation",
-		     3 => "entry_word",
-		     4 => "part_category",
-		     5 => "part_category_id",
-		     6 => "part_class",
-		     7 => "part_class_id",
-		     8 => "conjugational_form",
-		     9 => "conjugational_form_id",
-		     10 => "conjugational_form_id",
-		     11 => "semantic_infomation"
-	}
-
-
-	response = {}
-	response_to_word = {}
-
-	word_number = 1
-
- 	while true
-		cnt = 1
-		f = rnnlm.gets
-		break if f.to_s == "EOS\n"
-		result_to_word = f.to_s.force_encoding('utf-8').split(" ")
-	  	result_to_word.each do |result_contents|
-			response_to_word[response_to_word_number[cnt]] = result_contents
-		  	cnt += 1	
-		  	puts response_to_word
-	  	end
-	  	cnt = 1
-		response[word_number] = response_to_word
-		response_to_word = {}
-		word_number += 1
-        end
-        puts response
-	return response.to_json
+  response.to_json
 end
